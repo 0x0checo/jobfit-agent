@@ -114,10 +114,29 @@ def build_graph():
 GRAPH = build_graph()
 
 
+NODE_FRIENDLY = {
+    "parse_resume": "正在解析你的简历...",
+    "parse_jd": "正在研读目标岗位...",
+    "match": "正在逐条对齐你的经历与岗位要求...",
+    "rewrite": "正在为你重构简历表述...",
+}
+
+
 def run_pipeline(**inputs) -> PipelineState:
-    """一键全流程入口。inputs 支持：resume_pdf_path / jd_text / jd_url / prompt_version / 预置的 resume / jd。"""
+    """一键全流程入口（一次性返回最终 state）。"""
     initial: PipelineState = {"prompt_version": "v1_baseline", "log": [], **inputs}
     return GRAPH.invoke(initial)
+
+
+def stream_pipeline(**inputs):
+    """流式执行：每个节点完成后 yield (node_name, friendly_msg, state)。
+    供前端做进度条/状态实时展示使用。"""
+    initial: PipelineState = {"prompt_version": "v1_baseline", "log": [], **inputs}
+    last_state: PipelineState = initial
+    for update in GRAPH.stream(initial, stream_mode="updates"):
+        for node_name, node_state in update.items():
+            last_state = {**last_state, **node_state}
+            yield node_name, NODE_FRIENDLY.get(node_name, node_name), last_state
 
 
 if __name__ == "__main__":
