@@ -65,17 +65,35 @@ AI Agent项目/
 
 运行：`python -m agent.eval_bench`
 
-### 一个真实的迭代故事
+### 一个真实的三轮迭代故事（v1 → v2 → 回退 v1）
 
-**发现问题**：v1 在低匹配岗位打出 overall=73 分，soft_score=100 拉抬综合分——"JD 没软要求 = 软要求满分"是评估陷阱。
+**轮次 1：发现问题**  
+v1 在低匹配岗位打出 overall=73，soft_score=100 拉抬综合分——"JD 没软要求 = 软要求满分"是评估陷阱。
 
-**修复动作**：v2 prompt 规则改为"soft_preferences 为空 → soft_score=null, overall=hard_score"。
+**轮次 2：尝试修复（v2）**  
+v2 prompt 规则改为"soft_preferences 为空 → soft_score=null, overall=hard_score"。  
+首次 LLM-as-Judge 评测：v2 平均分 10.67 > v1 9.67，低匹配场景 honesty 维度 2→3。
 
-**评测结果**：v2 平均分 10.67 vs v1 9.67，低匹配场景 honesty 维度 2 → 3。
+**轮次 3：引入 Rule Judge，发现反转**  
+怀疑 LLM Judge 抓不到数值错误，加了 7 条确定性规则（分数公式、覆盖率、evidence 非空率等）。  
+再跑评测，结果：
+- LLM Judge 分数波动（v1 从 9.67 跳到 11.67 —— 同 prompt 多次跑不稳定）
+- Rule Judge 揪出 v2 的 `hard_score` 数学回归
+- 综合双通道，**v1 反胜（2-0-1）**
 
-**但**：v2 在低匹配案例上出现 hard_score 数学计算回归（3 条非零匹配被算成 0），而 LLM Judge 未能识别——**揭示了 LLM-as-Judge 对数值错误的盲区**。
+**最终决策**：默认 prompt 回退为 v1_baseline，v2 作为"修一个 bug 引入另一个 bug"的反例保留。
 
-**下一步 v3**：加数值后处理校验 + rule-based judge 做双重评估。
+### 评测给我的三个真实教训
+
+1. **LLM-as-Judge 自身有随机性**：同 prompt 同输入两次跑，分数能差 2 分。单次评测不可信，必须多 seed 取平均。
+2. **Rule Judge 不可缺**：LLM Judge 擅长语义判断（建议是否空泛），但对数值错误盲视。生产级评测必须 rule + LLM 双通道。
+3. **迭代不一定是前进**：v2 修了 soft 虚高却引入 hard 计算回归，"净负迭代"比想象中常见。评测体系存在的意义就是识别这种伪进步。
+
+### v3（下一步方向）
+
+- 双保留：v2 的 soft_score=None 逻辑 + 修复 hard_score 数学计算
+- Multi-seed LLM Judge（每版跑 3 次取平均）
+- 评测数据集扩到 10+ 用例，覆盖更多匹配层级
 
 ## 🎯 设计决策备注
 

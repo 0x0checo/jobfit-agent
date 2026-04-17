@@ -1,9 +1,17 @@
 """Prompt 版本管理 —— 匹配 Agent 的 prompt 多版本存储。
 
+版本说明（截至 v2 评测后）：
+- **v1_baseline**：当前生产默认版本，数学规则直觉但 soft_score 空值处理粗糙。
+- **v2_fixed**：曾尝试修复 soft_score 虚高，但引入 hard_score 计算回归，
+  在 Rule Judge + LLM Judge 双通道评测下净得分低于 v1 → 回退为非默认。
+  保留在仓库作为"修一个 bug 引入另一个 bug"的真实迭代反例。
+
+下一步 v3（待做）：同时保留 v2 的 soft_score=None 逻辑 + 修复 hard_score 数学计算。
+
 为什么把 prompt 抽出来：
 - 方便做 A/B 对比（模块 4 评测台）
 - 改 prompt 不碰业务代码，降低回归风险
-- 面试讲"我的 prompt 是受版本控制的"显得工程成熟
+- prompt 受版本控制后，任何迭代都可以可复现地回滚
 """
 
 MATCHER_PROMPTS = {

@@ -56,6 +56,23 @@ class MatchReport(BaseModel):
     top_actions: List[str] = Field(default_factory=list, description="最优先的 3-5 条修改动作")
 
 
+class RewriteBullet(BaseModel):
+    """单条 bullet 的 before/after 改写。"""
+    experience_company: str = Field(description="归属于哪段经历（公司名）")
+    before: str = Field(description="原 bullet 原文")
+    after: str = Field(description="改写后 bullet")
+    change_reason: str = Field(description="改写理由：对应 JD 哪条要求、用了什么技术/产品表述")
+
+
+class RewriteResult(BaseModel):
+    """改写 Agent 输出。"""
+    rewritten_summary: Optional[str] = Field(None, description="改写后的个人定位（summary）")
+    summary_change_reason: Optional[str] = None
+    rewritten_bullets: List[RewriteBullet] = Field(default_factory=list)
+    new_keywords_added: List[str] = Field(default_factory=list, description="新植入的 JD 关键词")
+    notes: Optional[str] = Field(None, description="整体改写策略说明")
+
+
 class EvalScore(BaseModel):
     """单维度评分：0-5 分 + 一句理由。"""
     score: int = Field(ge=0, le=5)
@@ -71,6 +88,20 @@ class EvalResult(BaseModel):
     total: int = Field(description="三维总分 0-15")
 
 
+class RuleCheck(BaseModel):
+    """单条规则校验结果。"""
+    name: str
+    passed: bool
+    detail: str = ""
+
+
+class RuleEvalResult(BaseModel):
+    """规则型评估结果：0-5 分映射自通过率，附详细 check 列表。"""
+    checks: List[RuleCheck] = Field(default_factory=list)
+    pass_rate: float = Field(description="通过率 0-1")
+    score: int = Field(description="折算到 0-5 分")
+
+
 class CaseResult(BaseModel):
     """单个测试用例上两个 prompt 版本的对比结果。"""
     case_name: str
@@ -78,7 +109,10 @@ class CaseResult(BaseModel):
     v2_report: dict
     v1_eval: EvalResult
     v2_eval: EvalResult
+    v1_rule_eval: Optional[RuleEvalResult] = None
+    v2_rule_eval: Optional[RuleEvalResult] = None
     winner: str = Field(description="v1 / v2 / tie")
+    judge_disagreement: Optional[str] = Field(None, description="LLM-judge 和 rule-judge 分歧的用例说明")
 
 
 class BenchReport(BaseModel):

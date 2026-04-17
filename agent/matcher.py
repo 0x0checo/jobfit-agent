@@ -23,7 +23,7 @@ _client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 _MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
 
-def match(resume: Resume, jd: JobDescription, prompt_version: str = "v2_fixed") -> MatchReport:
+def match(resume: Resume, jd: JobDescription, prompt_version: str = "v1_baseline") -> MatchReport:
     user_msg = (
         f"候选人简历（JSON）：\n{json.dumps(resume.model_dump(), ensure_ascii=False, indent=2)}\n\n"
         f"目标 JD（JSON）：\n{json.dumps(jd.model_dump(), ensure_ascii=False, indent=2)}\n\n"

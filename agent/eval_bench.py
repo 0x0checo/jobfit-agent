@@ -23,6 +23,7 @@ from agent.schemas import (
     EvalResult, CaseResult, BenchReport,
 )
 from agent.matcher import match
+from agent.rule_judge import rule_judge
 
 load_dotenv()
 _client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
@@ -83,13 +84,23 @@ def run_bench(cases: list[tuple[str, Resume, JobDescription]]) -> BenchReport:
         print(f"\n▶ 运行用例：{name}")
         v1_report = match(resume, jd, prompt_version="v1_baseline")
         v2_report = match(resume, jd, prompt_version="v2_fixed")
+
+        # LLM Judge
         v1_eval = judge(v1_report, resume, jd)
         v2_eval = judge(v2_report, resume, jd)
 
-        if v1_eval.total > v2_eval.total:
+        # Rule Judge（确定性）
+        v1_rule = rule_judge(v1_report, jd)
+        v2_rule = rule_judge(v2_report, jd)
+
+        # 综合胜负（LLM total + rule score*3 权重）
+        v1_combined = v1_eval.total + v1_rule.score * 3
+        v2_combined = v2_eval.total + v2_rule.score * 3
+
+        if v1_combined > v2_combined:
             winner = "v1"
             v1_wins += 1
-        elif v2_eval.total > v1_eval.total:
+        elif v2_combined > v1_combined:
             winner = "v2"
             v2_wins += 1
         else:
@@ -99,7 +110,16 @@ def run_bench(cases: list[tuple[str, Resume, JobDescription]]) -> BenchReport:
         v1_totals += v1_eval.total
         v2_totals += v2_eval.total
 
-        print(f"  v1 total={v1_eval.total}  v2 total={v2_eval.total}  winner={winner}")
+        # 分歧检测：LLM 说 A 好但 Rule 说 B 好
+        disagreement = None
+        llm_winner = "v1" if v1_eval.total > v2_eval.total else "v2" if v2_eval.total > v1_eval.total else "tie"
+        rule_winner = "v1" if v1_rule.score > v2_rule.score else "v2" if v2_rule.score > v1_rule.score else "tie"
+        if llm_winner != "tie" and rule_winner != "tie" and llm_winner != rule_winner:
+            disagreement = f"LLM 判 {llm_winner} 胜（{v1_eval.total} vs {v2_eval.total}），Rule 判 {rule_winner} 胜（{v1_rule.score} vs {v2_rule.score}）"
+
+        print(f"  v1 LLM={v1_eval.total} Rule={v1_rule.score}/5  |  v2 LLM={v2_eval.total} Rule={v2_rule.score}/5  |  winner={winner}")
+        if disagreement:
+            print(f"  ⚠️ 分歧：{disagreement}")
 
         case_results.append(CaseResult(
             case_name=name,
@@ -107,7 +127,10 @@ def run_bench(cases: list[tuple[str, Resume, JobDescription]]) -> BenchReport:
             v2_report=v2_report.model_dump(),
             v1_eval=v1_eval,
             v2_eval=v2_eval,
+            v1_rule_eval=v1_rule,
+            v2_rule_eval=v2_rule,
             winner=winner,
+            judge_disagreement=disagreement,
         ))
 
     n = len(cases)

@@ -12,15 +12,20 @@ from pathlib import Path
 import streamlit as st
 
 # Streamlit Cloud secrets → 环境变量（本地用 .env，云端用 st.secrets）
-if hasattr(st, "secrets") and "OPENAI_API_KEY" in st.secrets:
-    os.environ["OPENAI_API_KEY"] = st.secrets["OPENAI_API_KEY"]
-    os.environ["OPENAI_MODEL"] = st.secrets.get("OPENAI_MODEL", "gpt-4o-mini")
+try:
+    if "OPENAI_API_KEY" in st.secrets:
+        os.environ["OPENAI_API_KEY"] = st.secrets["OPENAI_API_KEY"]
+        os.environ["OPENAI_MODEL"] = st.secrets.get("OPENAI_MODEL", "gpt-4o-mini")
+except (FileNotFoundError, st.errors.StreamlitSecretNotFoundError):
+    pass  # 本地无 secrets.toml，走 .env
 
 IS_CLOUD = os.environ.get("STREAMLIT_RUNTIME_ENV") == "cloud" or "STREAMLIT_SERVER_PORT" in os.environ
 
 from agent.resume_parser import parse_resume
 from agent.jd_parser import parse_jd
 from agent.matcher import match
+from agent.rewriter import rewrite, render_markdown
+from agent.graph import run_pipeline
 from agent.schemas import Resume, JobDescription, MatchReport
 from agent.display_labels import label
 
@@ -33,6 +38,8 @@ if "jd" not in st.session_state:
     st.session_state.jd = None
 if "match_report" not in st.session_state:
     st.session_state.match_report = None
+if "rewrite_result" not in st.session_state:
+    st.session_state.rewrite_result = None
 
 DATA_DIR = Path("data")
 UPLOAD_DIR = DATA_DIR / "resumes"
@@ -45,11 +52,53 @@ OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 st.title("🎯 JobFit Agent")
 st.caption("AI 驱动的求职匹配助手 · PDF 简历 + JD → 结构化匹配分析与改写建议")
 
-tabs = st.tabs(["1️⃣ 简历解析", "2️⃣ JD 分析", "3️⃣ 匹配报告", "4️⃣ Prompt 评测台"])
+tabs = st.tabs([
+    "🚀 一键全流程",
+    "1️⃣ 简历解析",
+    "2️⃣ JD 分析",
+    "3️⃣ 匹配报告",
+    "4️⃣ 简历改写",
+    "5️⃣ Prompt 评测台",
+])
+
+
+# ---------- Tab 0: 一键全流程（LangGraph 编排） ----------
+with tabs[0]:
+    st.subheader("LangGraph 多 Agent 编排 · 一键跑完全流程")
+    st.caption("Graph：parse_resume → parse_jd → match → rewrite → END")
+
+    c1, c2 = st.columns(2)
+    with c1:
+        pl_pdf = st.file_uploader("上传简历 PDF", type=["pdf"], key="pl_pdf")
+    with c2:
+        pl_jd = st.text_area("粘贴目标 JD 文本", height=200, key="pl_jd")
+
+    if st.button("🚀 启动全流程", type="primary", disabled=not (pl_pdf and pl_jd.strip())):
+        pdf_path = UPLOAD_DIR / pl_pdf.name
+        pdf_path.write_bytes(pl_pdf.getbuffer())
+
+        log_box = st.empty()
+        with st.spinner("Pipeline 运行中..."):
+            result = run_pipeline(resume_pdf_path=str(pdf_path), jd_text=pl_jd)
+
+        log_box.code("\n".join(result["log"]), language="text")
+
+        # 把结果回填到 session_state，其他 tab 直接可用
+        st.session_state.resume = result["resume"]
+        st.session_state.jd = result["jd"]
+        st.session_state.match_report = result["match_report"]
+        st.session_state.rewrite_result = result["rewrite_result"]
+
+        st.success("✅ 全流程完成，可切换到 Tab 3/4 查看详细结果")
+
+        c1, c2, c3 = st.columns(3)
+        c1.metric("综合匹配度", result["match_report"].overall_score)
+        c2.metric("改写 bullet 数", len(result["rewrite_result"].rewritten_bullets))
+        c3.metric("新植入关键词", len(result["rewrite_result"].new_keywords_added))
 
 
 # ---------- Tab 1: 简历解析 ----------
-with tabs[0]:
+with tabs[1]:
     st.subheader("上传你的简历 PDF")
     uploaded = st.file_uploader("选择 PDF 文件", type=["pdf"])
 
@@ -96,7 +145,7 @@ with tabs[0]:
 
 
 # ---------- Tab 2: JD 分析 ----------
-with tabs[1]:
+with tabs[2]:
     st.subheader("输入目标岗位 JD")
     modes = ["粘贴文本"] if IS_CLOUD else ["粘贴文本", "抓取 URL"]
     if IS_CLOUD:
@@ -142,11 +191,16 @@ with tabs[1]:
 
 
 # ---------- Tab 3: 匹配报告 ----------
-with tabs[2]:
+with tabs[3]:
     if not st.session_state.resume or not st.session_state.jd:
         st.warning("请先在 Tab 1 和 Tab 2 完成简历和 JD 的分析")
     else:
-        prompt_ver = st.selectbox("选择 Prompt 版本", ["v2_fixed", "v1_baseline"], index=0)
+        prompt_ver = st.selectbox(
+            "选择 Prompt 版本",
+            ["v1_baseline", "v2_fixed"],
+            index=0,
+            help="v1 为当前默认（评测胜出）；v2 保留作为'修了一个 bug 但引入另一个 bug'的反例",
+        )
         if st.button("🎯 生成匹配报告", type="primary"):
             with st.spinner("匹配分析中..."):
                 st.session_state.match_report = match(
@@ -191,8 +245,67 @@ with tabs[2]:
                     st.markdown(f"**改进建议**：{g.suggestion}")
 
 
-# ---------- Tab 4: Prompt 评测台 ----------
-with tabs[3]:
+# ---------- Tab 4: 简历改写 ----------
+with tabs[4]:
+    st.subheader("基于匹配报告，生成针对性改写")
+    if not st.session_state.match_report:
+        st.warning("请先在 Tab 3 生成匹配报告")
+    else:
+        if st.button("✍️ 生成改写建议", type="primary"):
+            with st.spinner("改写中..."):
+                st.session_state.rewrite_result = rewrite(
+                    st.session_state.resume,
+                    st.session_state.jd,
+                    st.session_state.match_report,
+                )
+            st.success("改写完成 ✅")
+
+        if st.session_state.rewrite_result:
+            res = st.session_state.rewrite_result
+
+            if res.new_keywords_added:
+                st.markdown("**🔑 本次植入 JD 关键词**：" + " · ".join([f"`{k}`" for k in res.new_keywords_added]))
+
+            if res.rewritten_summary:
+                st.markdown("### 个人定位")
+                c1, c2 = st.columns(2)
+                with c1:
+                    st.markdown("**原版**")
+                    st.info(st.session_state.resume.summary or "-")
+                with c2:
+                    st.markdown("**改写后**")
+                    st.success(res.rewritten_summary)
+                if res.summary_change_reason:
+                    st.caption(f"改写理由：{res.summary_change_reason}")
+
+            st.markdown("### Bullet 改写（仅显示有修改的）")
+            for rb in res.rewritten_bullets:
+                with st.expander(f"📝 {rb.experience_company}"):
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        st.markdown("**原文**")
+                        st.info(rb.before)
+                    with c2:
+                        st.markdown("**改写后**")
+                        st.success(rb.after)
+                    st.caption(f"🎯 {rb.change_reason}")
+
+            if res.notes:
+                st.markdown("### 改写策略")
+                st.write(res.notes)
+
+            # 下载 Markdown
+            md = render_markdown(st.session_state.resume, res)
+            st.download_button(
+                "📥 下载改写版简历（Markdown）",
+                data=md,
+                file_name=f"{st.session_state.resume.name}_改写版.md",
+                mime="text/markdown",
+            )
+
+
+# ---------- Tab 5: Prompt 评测台 ----------
+with tabs[5]:
     st.subheader("Prompt 版本对比评测")
     st.caption("LLM-as-a-Judge · 三维度打分（诚实度 / 具体度 / 覆盖度）· 对应 JD 要求的「大模型 prompt 调优 + 效果评测经验」")
 
@@ -211,16 +324,32 @@ with tabs[3]:
         c1.metric("v1 baseline 平均分", f"{data['v1_avg_total']} / 15")
         c2.metric("v2 fixed 平均分", f"{data['v2_avg_total']} / 15", delta=round(data['v2_avg_total']-data['v1_avg_total'],2))
 
-        st.markdown("### 逐案对比")
+        st.markdown("### 逐案对比（LLM Judge + Rule Judge 双通道）")
         for c in data["cases"]:
-            with st.expander(f"{c['case_name']} · 胜者：{c['winner']}"):
+            header = f"{c['case_name']} · 胜者：{c['winner']}"
+            if c.get("judge_disagreement"):
+                header += " · ⚠️ 双判分歧"
+            with st.expander(header):
+                if c.get("judge_disagreement"):
+                    st.error(f"**分歧**：{c['judge_disagreement']}")
+
                 col1, col2 = st.columns(2)
                 with col1:
-                    st.markdown("**v1 baseline**")
+                    st.markdown("**v1 baseline — LLM Judge**")
                     st.json(c["v1_eval"])
+                    if c.get("v1_rule_eval"):
+                        st.markdown(f"**v1 — Rule Judge** (通过率 {c['v1_rule_eval']['pass_rate']*100:.0f}%, {c['v1_rule_eval']['score']}/5)")
+                        for chk in c["v1_rule_eval"]["checks"]:
+                            icon = "✅" if chk["passed"] else "❌"
+                            st.markdown(f"{icon} `{chk['name']}` — {chk['detail']}")
                 with col2:
-                    st.markdown("**v2 fixed**")
+                    st.markdown("**v2 fixed — LLM Judge**")
                     st.json(c["v2_eval"])
+                    if c.get("v2_rule_eval"):
+                        st.markdown(f"**v2 — Rule Judge** (通过率 {c['v2_rule_eval']['pass_rate']*100:.0f}%, {c['v2_rule_eval']['score']}/5)")
+                        for chk in c["v2_rule_eval"]["checks"]:
+                            icon = "✅" if chk["passed"] else "❌"
+                            st.markdown(f"{icon} `{chk['name']}` — {chk['detail']}")
 
         st.markdown("### 💡 评测发现（项目迭代笔记）")
         st.markdown("""
