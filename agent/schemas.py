@@ -71,6 +71,8 @@ class RewriteResult(BaseModel):
     rewritten_bullets: List[RewriteBullet] = Field(default_factory=list)
     new_keywords_added: List[str] = Field(default_factory=list, description="新植入的 JD 关键词")
     notes: Optional[str] = Field(None, description="整体改写策略说明")
+    # RAG 检索到的参考 bullet（由 Rewriter 填入，LLM 不生成此字段）
+    rag_references: List[dict] = Field(default_factory=list, description="RAG 检索到的参考案例")
 
 
 class EvalScore(BaseModel):

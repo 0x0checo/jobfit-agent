@@ -36,6 +36,7 @@ class PipelineState(TypedDict, total=False):
     jd_text: Optional[str]
     jd_url: Optional[str]
     prompt_version: str
+    use_rag: bool
 
     # 中间产物
     resume: Optional[Resume]
@@ -87,7 +88,12 @@ def match_node(state: PipelineState) -> PipelineState:
 
 def rewrite_node(state: PipelineState) -> PipelineState:
     _log(state, "▶ rewrite: 运行中")
-    state["rewrite_result"] = rewrite(state["resume"], state["jd"], state["match_report"])
+    state["rewrite_result"] = rewrite(
+        state["resume"],
+        state["jd"],
+        state["match_report"],
+        use_rag=state.get("use_rag", True),
+    )
     n = len(state["rewrite_result"].rewritten_bullets)
     _log(state, f"✓ rewrite: 改写 {n} 条 bullet")
     return state

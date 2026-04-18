@@ -59,7 +59,7 @@ def markdown_to_pdf(markdown_text: str) -> bytes:
     pdf.add_page()
     pdf.set_margins(18, 18, 18)
 
-    font_path = _find_cjk_font()
+    font_path = _ensure_cjk_font()
     if font_path:
         pdf.add_font("CJK", "", font_path)
         base_font = "CJK"

@@ -378,12 +378,20 @@ with tabs[4]:
         st.markdown("#### 为你生成这份岗位的定制简历")
         st.caption("AI 会保留所有量化数据，只针对岗位要求优化表述、植入招聘方关注的关键词。")
 
+        use_rag = st.toggle(
+            "✨ 启用案例库增强（RAG）",
+            value=True,
+            help="开启后会从 75 条高质量简历 bullet 案例库中检索 top-3 相似案例，作为改写的风格锚点 —— 帮助 AI 写出更像真实优秀 bullet 的表述。",
+            key="rewrite_use_rag",
+        )
+
         if st.button("生成改写建议", type="primary", key="btn_rewrite"):
             with st.spinner("AI 正在为你定制..."):
                 st.session_state.rewrite_result = rewrite(
                     st.session_state.resume,
                     st.session_state.jd,
                     st.session_state.match_report,
+                    use_rag=use_rag,
                 )
             st.success("改写完成")
 
@@ -422,6 +430,18 @@ with tabs[4]:
             if res.notes:
                 with st.expander("改写策略说明"):
                     st.write(res.notes)
+
+            if res.rag_references:
+                with st.expander(f"🔍 本次参考了案例库中的 {len(res.rag_references)} 条 bullet"):
+                    st.caption("以下高质量案例作为改写的风格 / 量化粒度锚点（不会直接抄袭内容）")
+                    for i, ref in enumerate(res.rag_references, 1):
+                        tags = " · ".join(ref.get("skill_tags", []))
+                        st.markdown(
+                            f"**[{i}] `{ref['role_tag']}` · {tags}**  "
+                            f"<span style='color:#6b7280;font-size:0.85em'>相似度 {ref.get('score', 0):.2f}</span>",
+                            unsafe_allow_html=True,
+                        )
+                        st.markdown(f"> {ref['bullet']}")
 
             # 导出
             md_text = render_markdown(st.session_state.resume, res)
