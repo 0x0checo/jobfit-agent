@@ -25,6 +25,7 @@ from agent.resume_parser import parse_resume
 from agent.jd_parser import parse_jd
 from agent.matcher import match
 from agent.rewriter import rewrite, render_markdown
+from agent.interviewer import generate_questions, follow_up, PERSONA_STYLES
 from agent.graph import stream_pipeline, NODE_FRIENDLY
 from agent.pdf_export import markdown_to_pdf
 from agent.schemas import Resume, JobDescription, MatchReport
@@ -125,9 +126,12 @@ footer { visibility: hidden; }
 """, unsafe_allow_html=True)
 
 # ---------- Session state ----------
-for k in ["resume", "jd", "match_report", "rewrite_result"]:
+for k in ["resume", "jd", "match_report", "rewrite_result", "interview_set", "interview_chat"]:
     if k not in st.session_state:
         st.session_state[k] = None
+# interview_chat 是 dict: {question_idx: [{"role": "interviewer"/"candidate"/"feedback", "content": "...", ...}, ...]}
+if st.session_state.interview_chat is None:
+    st.session_state.interview_chat = {}
 
 DATA_DIR = Path("data")
 UPLOAD_DIR = DATA_DIR / "resumes"
@@ -149,6 +153,7 @@ tab_names = [
     "💼 目标岗位",
     "📊 匹配报告",
     "✍️ 简历改写",
+    "🎤 模拟面试",
 ]
 if DEV_MODE:
     tab_names.append("🔬 评测台（开发者）")
@@ -469,9 +474,137 @@ with tabs[4]:
                     st.caption(f"⚠️ PDF 暂不可用：{e}")
 
 
-# ==================== Tab 5 (dev only): 评测台 ====================
+# ==================== Tab 5: 模拟面试 ====================
+with tabs[5]:
+    if not st.session_state.resume or not st.session_state.jd or not st.session_state.match_report:
+        st.warning("请先完成简历解析、岗位解析和匹配报告，面试题基于三者生成。")
+    else:
+        st.markdown("#### 用匹配报告当弹药，让 AI 扮演面试官拷问你")
+        st.caption("面试题针对这份简历 × 这个岗位定制 —— 会挖你的项目、戳你的差距、考你的岗位 sense。支持多轮追问。")
+
+        c1, c2 = st.columns([2, 1])
+        with c1:
+            persona = st.radio(
+                "选择面试官人设",
+                options=list(PERSONA_STYLES.keys()),
+                format_func=lambda x: PERSONA_STYLES[x]["label"],
+                horizontal=True,
+                key="interview_persona",
+            )
+            st.caption(f"💡 {PERSONA_STYLES[persona]['style']}")
+        with c2:
+            st.write("")
+            st.write("")
+            if st.button("🎬 开始面试（生成题目）", type="primary", key="btn_gen_interview"):
+                with st.spinner("面试官正在备题..."):
+                    st.session_state.interview_set = generate_questions(
+                        st.session_state.resume,
+                        st.session_state.jd,
+                        st.session_state.match_report,
+                        persona=persona,
+                    )
+                    st.session_state.interview_chat = {}  # 重置答题历史
+                st.success("题目已生成，开始作答吧")
+
+        qs = st.session_state.interview_set
+        if qs:
+            st.divider()
+            cat_labels = {
+                "resume_deepdive": ("🎯 简历深挖", "面试官盯着你的项目细节追问"),
+                "gap_probe": ("⚠️ 差距探测", "面试官试图验证你简历里没写透的能力"),
+                "domain_open": ("🧠 岗位专业", "面试官考察你对业务领域的 sense"),
+            }
+            diff_color = {"easy": "🟢", "medium": "🟡", "hard": "🔴"}
+
+            for cat, (label_txt, label_hint) in cat_labels.items():
+                questions = getattr(qs, cat)
+                if not questions:
+                    continue
+                st.markdown(f"### {label_txt}")
+                st.caption(label_hint)
+
+                for qi, q in enumerate(questions):
+                    qid = f"{cat}_{qi}"
+                    with st.expander(f"{diff_color.get(q.difficulty, '⚪')} **Q:** {q.question}"):
+                        st.caption(f"**考察意图**：{q.intent}")
+                        if q.linked_requirement:
+                            st.caption(f"**关联**：{q.linked_requirement}")
+
+                        # 展示此前的对话
+                        turns = st.session_state.interview_chat.get(qid, [])
+                        for t in turns:
+                            if t["role"] == "candidate":
+                                st.markdown(f"**🗣️ 你的回答**")
+                                st.info(t["content"])
+                            elif t["role"] == "interviewer_followup":
+                                st.markdown(f"**🎙️ 追问**")
+                                st.warning(t["content"])
+                            elif t["role"] == "feedback":
+                                fb = t["content"]
+                                st.markdown("**💡 快速反馈**")
+                                st.caption(fb["quick_feedback"])
+                                if fb.get("strengths"):
+                                    st.markdown("**亮点**：" + " · ".join(fb["strengths"]))
+                                if fb.get("weaknesses"):
+                                    st.markdown("**可改进**：" + " · ".join(fb["weaknesses"]))
+
+                        # 下一轮问题（首问或追问）
+                        current_q = q.question
+                        for t in reversed(turns):
+                            if t["role"] == "interviewer_followup":
+                                current_q = t["content"]
+                                break
+
+                        # 是否已结束（feedback.needs_followup == False）
+                        ended = any(
+                            t["role"] == "feedback" and not t["content"].get("needs_followup", True)
+                            for t in turns
+                        )
+
+                        if not ended:
+                            ans_key = f"ans_{qid}_{len(turns)}"
+                            ans = st.text_area(
+                                "✍️ 作答" if not any(t["role"] == "candidate" for t in turns) else "✍️ 继续作答",
+                                key=ans_key,
+                                height=120,
+                                placeholder="推荐 STAR 结构：Situation 场景 / Task 任务 / Action 动作 / Result 结果+量化",
+                            )
+                            submit_key = f"submit_{qid}_{len(turns)}"
+                            if st.button("提交答案", key=submit_key):
+                                if ans.strip():
+                                    prior = []
+                                    pending_q = q.question
+                                    for t in turns:
+                                        if t["role"] == "candidate":
+                                            prior.append({"q": pending_q, "a": t["content"]})
+                                        elif t["role"] == "interviewer_followup":
+                                            pending_q = t["content"]
+                                    with st.spinner("面试官在思考..."):
+                                        fb = follow_up(
+                                            question=current_q,
+                                            user_answer=ans,
+                                            persona=qs.persona,
+                                            prior_turns=prior or None,
+                                        )
+                                    turns.append({"role": "candidate", "content": ans})
+                                    turns.append({"role": "feedback", "content": fb.model_dump()})
+                                    if fb.needs_followup and fb.followup_question:
+                                        turns.append({"role": "interviewer_followup", "content": fb.followup_question})
+                                    st.session_state.interview_chat[qid] = turns
+                                    st.rerun()
+                        else:
+                            st.success("✅ 本题已结束。")
+
+                        # 参考答题要点
+                        if q.answer_hints:
+                            with st.expander("📖 查看参考答题要点（答完再看避免剧透）"):
+                                for h in q.answer_hints:
+                                    st.markdown(f"- {h}")
+
+
+# ==================== Tab 6 (dev only): 评测台 ====================
 if DEV_MODE:
-    with tabs[5]:
+    with tabs[6]:
         st.subheader("Prompt 版本对比评测（开发者视角）")
         st.caption("LLM-as-Judge + Rule-based Judge 双通道评估 matcher prompt 的稳定性与正确性。")
 

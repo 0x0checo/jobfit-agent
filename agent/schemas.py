@@ -128,6 +128,34 @@ class BenchReport(BaseModel):
     cases: List[CaseResult]
 
 
+class InterviewQuestion(BaseModel):
+    """单道面试题。"""
+    category: str = Field(description="resume_deepdive / gap_probe / domain_open")
+    question: str = Field(description="问题本身")
+    intent: str = Field(description="考察意图（面试官视角为什么问这题）")
+    answer_hints: List[str] = Field(default_factory=list, description="参考答题要点（STAR 关键锚点，给用户复盘用）")
+    difficulty: str = Field(description="easy / medium / hard")
+    linked_requirement: Optional[str] = Field(None, description="对应 JD 哪条要求 / 简历哪段经历")
+
+
+class InterviewSet(BaseModel):
+    """一次生成的面试题集合。"""
+    persona: str = Field(description="面试官人设：tech / product / hr")
+    persona_style_note: str = Field(description="该人设的风格描述，一句话")
+    resume_deepdive: List[InterviewQuestion] = Field(default_factory=list, description="简历深挖题")
+    gap_probe: List[InterviewQuestion] = Field(default_factory=list, description="差距探测题")
+    domain_open: List[InterviewQuestion] = Field(default_factory=list, description="岗位专业开放题")
+
+
+class FollowUpResult(BaseModel):
+    """针对用户答案生成的追问 + 快速反馈。"""
+    needs_followup: bool = Field(description="是否需要追问（答案是否足够深入）")
+    followup_question: Optional[str] = Field(None, description="追问内容；needs_followup=False 时为 None")
+    quick_feedback: str = Field(description="对刚才答案的一句话点评（是否有 STAR 结构、量化、关键词命中）")
+    strengths: List[str] = Field(default_factory=list, description="答案亮点")
+    weaknesses: List[str] = Field(default_factory=list, description="答案薄弱点")
+
+
 class JobDescription(BaseModel):
     """JD 结构化表示。区分硬/软要求，方便下游匹配模块做差异化加权。"""
     title: str = Field(description="岗位名称")
