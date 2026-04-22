@@ -26,6 +26,7 @@ from agent.jd_parser import parse_jd
 from agent.matcher import match
 from agent.rewriter import rewrite, render_markdown
 from agent.interviewer import generate_questions, follow_up, PERSONA_STYLES
+from agent.react_agent import run_agent as react_run
 from agent.graph import stream_pipeline, NODE_FRIENDLY
 from agent.pdf_export import markdown_to_pdf
 from agent.schemas import Resume, JobDescription, MatchReport
@@ -126,12 +127,14 @@ footer { visibility: hidden; }
 """, unsafe_allow_html=True)
 
 # ---------- Session state ----------
-for k in ["resume", "jd", "match_report", "rewrite_result", "interview_set", "interview_chat"]:
+for k in ["resume", "jd", "match_report", "rewrite_result", "interview_set", "interview_chat", "agent_history", "agent_pdf_path"]:
     if k not in st.session_state:
         st.session_state[k] = None
 # interview_chat 是 dict: {question_idx: [{"role": "interviewer"/"candidate"/"feedback", "content": "...", ...}, ...]}
 if st.session_state.interview_chat is None:
     st.session_state.interview_chat = {}
+if st.session_state.agent_history is None:
+    st.session_state.agent_history = []  # [{"role": "user"/"assistant", "content": "..."}] + 事件展示用
 
 DATA_DIR = Path("data")
 UPLOAD_DIR = DATA_DIR / "resumes"
@@ -154,6 +157,7 @@ tab_names = [
     "📊 匹配报告",
     "✍️ 简历改写",
     "🎤 模拟面试",
+    "🤖 求职陪跑 Agent",
 ]
 if DEV_MODE:
     tab_names.append("🔬 评测台（开发者）")
@@ -602,9 +606,154 @@ with tabs[5]:
                                     st.markdown(f"- {h}")
 
 
-# ==================== Tab 6 (dev only): 评测台 ====================
+# ==================== Tab 6: 求职陪跑 Agent (ReAct) ====================
+with tabs[6]:
+    st.markdown("#### 🤖 用一句话驱动整个求职准备流程")
+    st.caption("不用一个个 tab 点,告诉 AI 你的目标,它自己规划调用哪些工具、什么顺序、参数填什么。")
+
+    # 当前 session 产物状态 —— 让用户清楚哪些已经就绪
+    status_chips = []
+    if st.session_state.resume:
+        status_chips.append(f"✅ 简历 · {st.session_state.resume.name}")
+    if st.session_state.jd:
+        status_chips.append(f"✅ JD · {st.session_state.jd.title}")
+    if st.session_state.match_report:
+        status_chips.append(f"✅ 匹配报告 · {st.session_state.match_report.overall_score}/100")
+    if st.session_state.rewrite_result:
+        status_chips.append(f"✅ 改写 · {len(st.session_state.rewrite_result.rewritten_bullets)} 条 bullet")
+    if st.session_state.interview_set:
+        status_chips.append(f"✅ 面试题 · {st.session_state.interview_set.persona}")
+    if status_chips:
+        st.success("**当前 session 产物**(所有 tab 共享):  " + "   ·   ".join(status_chips))
+    else:
+        st.info("💡 当前 session 暂无产物。可以上传 PDF + 粘贴 JD 后,告诉 Agent 你的目标。")
+
+    with st.expander("💡 这和其他 tab 有什么不同?(点开看架构设计)"):
+        st.markdown("""
+- **其他 tab**:固定流程 Workflow —— 开发者预定义"解析→匹配→改写"的路径
+- **这个 tab**:动态规划 Agent —— LLM 自主判断调用哪些工具、顺序、参数,符合 Anthropic *Building Effective Agents* 对 Agent 的严格定义
+- **底层共享**:两边用的是同一套底层函数(tools),Agent 调用的结果会同步到其他 tab
+- **技术实现**:手写 ReAct loop(Reason + Act 循环)+ OpenAI Function Calling,不依赖 LangChain / LangGraph
+        """)
+
+    # 上传 PDF + 可选 JD 输入
+    c1, c2 = st.columns(2)
+    with c1:
+        ag_pdf = st.file_uploader("上传简历 PDF(Agent 会按需调用)", type=["pdf"], key="agent_pdf_upload")
+        if ag_pdf:
+            p = UPLOAD_DIR / ag_pdf.name
+            p.write_bytes(ag_pdf.getbuffer())
+            st.session_state.agent_pdf_path = str(p)
+            st.caption(f"✓ 已就绪:{ag_pdf.name}")
+    with c2:
+        ag_jd = st.text_area(
+            "(可选)JD 文本 —— 也可以直接在对话里粘贴或给 URL",
+            height=100, key="agent_jd_text",
+            placeholder="可在这里预置 JD,也可以在聊天时发给 Agent",
+        )
+
+    st.divider()
+
+    # 对话历史展示
+    for turn in st.session_state.agent_history:
+        if turn["role"] == "user":
+            with st.chat_message("user"):
+                st.markdown(turn["content"])
+        elif turn["role"] == "assistant":
+            with st.chat_message("assistant"):
+                # 展示 Agent 的完整执行轨迹
+                for ev in turn.get("events", []):
+                    if ev["type"] == "thought":
+                        st.markdown(f"💭 _{ev['content']}_")
+                    elif ev["type"] == "tool_call":
+                        st.caption(f"🔧 调用工具 `{ev['name']}` · 参数 `{ev['args']}`")
+                    elif ev["type"] == "tool_result":
+                        st.caption(f"   ↳ {ev['result']}")
+                if turn.get("final"):
+                    st.markdown(turn["final"])
+
+    # 输入框
+    user_input = st.chat_input("告诉 Agent 你想做什么,比如:帮我完整准备这个岗位的求职")
+    if user_input:
+        # 展示用户消息
+        with st.chat_message("user"):
+            st.markdown(user_input)
+
+        # 构造 ctx —— 把 session_state 相关字段映射进去,agent 执行会回写
+        ctx = {
+            "pdf_path": st.session_state.agent_pdf_path,
+            "jd_text": ag_jd.strip() if ag_jd and ag_jd.strip() else None,
+            "resume": st.session_state.resume,
+            "jd": st.session_state.jd,
+            "match_report": st.session_state.match_report,
+            "rewrite_result": st.session_state.rewrite_result,
+            "interview_set": st.session_state.interview_set,
+        }
+
+        # 历史对话(只保留 user/assistant 的文字,不传事件轨迹)
+        history_msgs = []
+        for t in st.session_state.agent_history:
+            if t["role"] == "user":
+                history_msgs.append({"role": "user", "content": t["content"]})
+            elif t["role"] == "assistant" and t.get("final"):
+                history_msgs.append({"role": "assistant", "content": t["final"]})
+
+        events_log = []
+        final_text = ""
+        with st.chat_message("assistant"):
+            status = st.status("🤖 Agent 正在思考与执行...", expanded=True)
+            try:
+                for event, payload in react_run(user_input, ctx, history=history_msgs):
+                    if event == "thought":
+                        with status:
+                            st.markdown(f"💭 _{payload}_")
+                        events_log.append({"type": "thought", "content": payload})
+                    elif event == "tool_call":
+                        with status:
+                            st.caption(f"🔧 调用工具 `{payload['name']}` · 参数 `{payload['args']}`")
+                        events_log.append({"type": "tool_call", "name": payload["name"], "args": payload["args"]})
+                    elif event == "tool_result":
+                        with status:
+                            st.caption(f"   ↳ {payload['result']}")
+                        events_log.append({"type": "tool_result", "name": payload["name"], "result": payload["result"]})
+                    elif event == "final":
+                        final_text = payload
+                    elif event == "error":
+                        final_text = f"⚠️ {payload}"
+                status.update(label="✅ Agent 执行完成", state="complete", expanded=False)
+            except Exception as e:
+                status.update(label=f"❌ 出错:{e}", state="error")
+                final_text = f"执行出错:{e}"
+
+            if final_text:
+                st.markdown(final_text)
+
+        # 把 agent 产物同步回 session_state,这样其他 tab 能看到(用 bracket 语法更稳)
+        synced = []
+        for key in ["resume", "jd", "match_report", "rewrite_result", "interview_set"]:
+            if ctx.get(key) is not None:
+                st.session_state[key] = ctx[key]
+                synced.append(key)
+        if synced:
+            st.toast(f"✅ 已同步到其他 tab:{', '.join(synced)}", icon="🔗")
+
+        # 追加对话记录
+        st.session_state.agent_history.append({"role": "user", "content": user_input})
+        st.session_state.agent_history.append({
+            "role": "assistant", "events": events_log, "final": final_text,
+        })
+        # 强制 rerun —— 触发其他 tab 用新 session_state 重新渲染
+        st.rerun()
+
+    if st.session_state.agent_history:
+        if st.button("🗑️ 清空对话历史", key="clear_agent_history"):
+            st.session_state.agent_history = []
+            st.rerun()
+
+
+# ==================== Tab 7 (dev only): 评测台 ====================
 if DEV_MODE:
-    with tabs[6]:
+    with tabs[7]:
         st.subheader("Prompt 版本对比评测（开发者视角）")
         st.caption("LLM-as-Judge + Rule-based Judge 双通道评估 matcher prompt 的稳定性与正确性。")
 

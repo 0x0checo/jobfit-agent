@@ -74,6 +74,9 @@ def markdown_to_pdf(markdown_text: str) -> bytes:
     for raw in markdown_text.splitlines():
         line = raw.rstrip()
 
+        # 每行开头重置 x 到左边距，避免上一行的 set_x 残留导致宽度异常
+        pdf.set_x(pdf.l_margin)
+
         # 空行
         if not line.strip():
             pdf.ln(2.5)

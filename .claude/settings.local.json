@@ -4,7 +4,10 @@
       "Bash(python scripts/build_index.py)",
       "Bash(python -c ' *)",
       "Bash(python)",
-      "Bash(python -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\(json.dumps\\({k:v for k,v in d.items\\(\\) if k!='cases'}, ensure_ascii=False, indent=2\\)\\)\")"
+      "Bash(python -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\(json.dumps\\({k:v for k,v in d.items\\(\\) if k!='cases'}, ensure_ascii=False, indent=2\\)\\)\")",
+      "Bash(/opt/anaconda3/envs/jobfit/bin/python -m agent.pdf_export data/outputs/resume_liwenyu_v2.md)",
+      "Bash(cp data/outputs/resume_liwenyu_v2.pdf \"/Users/wenyuli/Documents/百宝箱/求职/产品经理/李文宇_简历_v2.pdf\")",
+      "Bash(/opt/anaconda3/envs/jobfit/bin/python -c \"from agent.react_agent import run_agent, TOOLS, execute_tool; print\\(f'OK — {len\\(TOOLS\\)} tools defined'\\); print\\([t['function']['name'] for t in TOOLS]\\)\")"
     ]
   }
 }
