@@ -219,7 +219,7 @@ with tabs[0]:
 # ==================== Tab 1: 我的简历 ====================
 with tabs[1]:
     st.markdown("#### 上传并解析你的简历")
-    st.caption("AI 会把 PDF 里的信息抽取为结构化数据，方便后续与岗位逐条对齐。")
+    st.caption("上传简历后，AI 会帮你整理出教育、经历和技能。")
 
     uploaded = st.file_uploader("选择 PDF 文件", type=["pdf"], key="tab_resume_upload")
     if uploaded and st.button("解析简历", type="primary", key="btn_parse_resume"):
@@ -267,12 +267,10 @@ with tabs[1]:
 # ==================== Tab 2: 目标岗位 ====================
 with tabs[2]:
     st.markdown("#### 告诉 AI 你想申请什么岗位")
-    st.caption("你可以直接粘贴 JD 文本；本地运行时也支持从招聘页 URL 自动抓取。")
+    st.caption("粘贴岗位描述，AI 会帮你拆解出核心要求和关键词。")
 
     modes = ["粘贴文本"] if IS_CLOUD else ["粘贴文本", "抓取 URL"]
-    if IS_CLOUD:
-        st.caption("ℹ️ 线上版本仅支持文本输入，如需 URL 抓取请本地运行。")
-    mode = st.radio("输入方式", modes, horizontal=True, label_visibility="collapsed")
+    mode = st.radio("输入方式", modes, horizontal=True, label_visibility="collapsed") if len(modes) > 1 else modes[0]
 
     if mode == "粘贴文本":
         jd_text = st.text_area("粘贴 JD 全文", height=280, placeholder="把招聘页的岗位描述复制过来...")
@@ -388,9 +386,9 @@ with tabs[4]:
         st.caption("AI 会保留所有量化数据，只针对岗位要求优化表述、植入招聘方关注的关键词。")
 
         use_rag = st.toggle(
-            "✨ 启用案例库增强（RAG）",
+            "✨ 参考优秀简历案例",
             value=True,
-            help="开启后会从 75 条高质量简历 bullet 案例库中检索 top-3 相似案例，作为改写的风格锚点 —— 帮助 AI 写出更像真实优秀 bullet 的表述。",
+            help="开启后，AI 会先找几条和目标岗位相近的优秀简历写法作参考，让改写更专业、更有数据感。",
             key="rewrite_use_rag",
         )
 
@@ -441,8 +439,8 @@ with tabs[4]:
                     st.write(res.notes)
 
             if res.rag_references:
-                with st.expander(f"🔍 本次参考了案例库中的 {len(res.rag_references)} 条 bullet"):
-                    st.caption("以下高质量案例作为改写的风格 / 量化粒度锚点（不会直接抄袭内容）")
+                with st.expander(f"🔍 本次参考了 {len(res.rag_references)} 条优秀简历写法"):
+                    st.caption("仅参考表达方式，不会照搬内容")
                     for i, ref in enumerate(res.rag_references, 1):
                         tags = " · ".join(ref.get("skill_tags", []))
                         st.markdown(
@@ -609,7 +607,7 @@ with tabs[5]:
 # ==================== Tab 6: 求职陪跑 Agent (ReAct) ====================
 with tabs[6]:
     st.markdown("#### 🤖 用一句话驱动整个求职准备流程")
-    st.caption("不用一个个 tab 点,告诉 AI 你的目标,它自己规划调用哪些工具、什么顺序、参数填什么。")
+    st.caption("告诉 AI 你想做什么，它会帮你一步步完成：读简历、看岗位、做匹配、改简历、出面试题。")
 
     # 当前 session 产物状态 —— 让用户清楚哪些已经就绪
     status_chips = []
@@ -620,26 +618,28 @@ with tabs[6]:
     if st.session_state.match_report:
         status_chips.append(f"✅ 匹配报告 · {st.session_state.match_report.overall_score}/100")
     if st.session_state.rewrite_result:
-        status_chips.append(f"✅ 改写 · {len(st.session_state.rewrite_result.rewritten_bullets)} 条 bullet")
+        status_chips.append(f"✅ 简历改写 · {len(st.session_state.rewrite_result.rewritten_bullets)} 处")
     if st.session_state.interview_set:
-        status_chips.append(f"✅ 面试题 · {st.session_state.interview_set.persona}")
+        persona_label = PERSONA_STYLES.get(st.session_state.interview_set.persona, {}).get("label", "面试题")
+        status_chips.append(f"✅ 面试题 · {persona_label}")
     if status_chips:
-        st.success("**当前 session 产物**(所有 tab 共享):  " + "   ·   ".join(status_chips))
+        st.success("**已为你准备好**:  " + "   ·   ".join(status_chips) + "  —— 可在上方各页面查看详情")
     else:
-        st.info("💡 当前 session 暂无产物。可以上传 PDF + 粘贴 JD 后,告诉 Agent 你的目标。")
+        st.info("💡 上传简历、贴上岗位描述，然后在下方告诉 AI 你想做什么。")
 
-    with st.expander("💡 这和其他 tab 有什么不同?(点开看架构设计)"):
-        st.markdown("""
-- **其他 tab**:固定流程 Workflow —— 开发者预定义"解析→匹配→改写"的路径
-- **这个 tab**:动态规划 Agent —— LLM 自主判断调用哪些工具、顺序、参数,符合 Anthropic *Building Effective Agents* 对 Agent 的严格定义
+    if DEV_MODE:
+        with st.expander("🔬 架构说明(开发者)"):
+            st.markdown("""
+- **其他 tab**:固定流程 Workflow —— 预定义"解析→匹配→改写"的路径
+- **这个 tab**:动态规划 Agent —— LLM 自主判断调用哪些工具、顺序、参数
 - **底层共享**:两边用的是同一套底层函数(tools),Agent 调用的结果会同步到其他 tab
-- **技术实现**:手写 ReAct loop(Reason + Act 循环)+ OpenAI Function Calling,不依赖 LangChain / LangGraph
-        """)
+- **技术实现**:手写 ReAct loop(Reason + Act 循环)+ Function Calling,不依赖 LangChain
+            """)
 
     # 上传 PDF + 可选 JD 输入
     c1, c2 = st.columns(2)
     with c1:
-        ag_pdf = st.file_uploader("上传简历 PDF(Agent 会按需调用)", type=["pdf"], key="agent_pdf_upload")
+        ag_pdf = st.file_uploader("上传简历(PDF)", type=["pdf"], key="agent_pdf_upload")
         if ag_pdf:
             p = UPLOAD_DIR / ag_pdf.name
             p.write_bytes(ag_pdf.getbuffer())
@@ -647,12 +647,25 @@ with tabs[6]:
             st.caption(f"✓ 已就绪:{ag_pdf.name}")
     with c2:
         ag_jd = st.text_area(
-            "(可选)JD 文本 —— 也可以直接在对话里粘贴或给 URL",
+            "岗位描述(可选)",
             height=100, key="agent_jd_text",
-            placeholder="可在这里预置 JD,也可以在聊天时发给 Agent",
+            placeholder="粘贴岗位 JD,也可以直接发在下方对话框里",
         )
 
     st.divider()
+
+    TOOL_LABELS = {
+        "parse_resume": "解析简历",
+        "parse_jd": "分析岗位",
+        "match_resume_jd": "生成匹配报告",
+        "rewrite_resume": "改写简历",
+        "generate_interview_questions": "准备面试题",
+        "check_progress": "检查当前进度",
+    }
+
+    def _brief(result: str) -> str:
+        # 工具返回值是写给 LLM 的,界面只展示首句结论
+        return result.split("\n")[0].split("。")[0]
 
     # 对话历史展示
     for turn in st.session_state.agent_history:
@@ -666,14 +679,14 @@ with tabs[6]:
                     if ev["type"] == "thought":
                         st.markdown(f"💭 _{ev['content']}_")
                     elif ev["type"] == "tool_call":
-                        st.caption(f"🔧 调用工具 `{ev['name']}` · 参数 `{ev['args']}`")
-                    elif ev["type"] == "tool_result":
-                        st.caption(f"   ↳ {ev['result']}")
+                        st.caption(f"🔧 {TOOL_LABELS.get(ev['name'], ev['name'])}")
+                    elif ev["type"] == "tool_result" and ev["name"] != "check_progress":
+                        st.caption(f"   ↳ {_brief(ev['result'])}")
                 if turn.get("final"):
                     st.markdown(turn["final"])
 
     # 输入框
-    user_input = st.chat_input("告诉 Agent 你想做什么,比如:帮我完整准备这个岗位的求职")
+    user_input = st.chat_input("想让我帮你做什么?例如:帮我针对这个岗位改简历,再出几道面试题")
     if user_input:
         # 展示用户消息
         with st.chat_message("user"):
@@ -701,7 +714,7 @@ with tabs[6]:
         events_log = []
         final_text = ""
         with st.chat_message("assistant"):
-            status = st.status("🤖 Agent 正在思考与执行...", expanded=True)
+            status = st.status("🤖 AI 正在处理...", expanded=True)
             try:
                 for event, payload in react_run(user_input, ctx, history=history_msgs):
                     if event == "thought":
@@ -710,17 +723,18 @@ with tabs[6]:
                         events_log.append({"type": "thought", "content": payload})
                     elif event == "tool_call":
                         with status:
-                            st.caption(f"🔧 调用工具 `{payload['name']}` · 参数 `{payload['args']}`")
+                            st.caption(f"🔧 {TOOL_LABELS.get(payload['name'], payload['name'])}")
                         events_log.append({"type": "tool_call", "name": payload["name"], "args": payload["args"]})
                     elif event == "tool_result":
-                        with status:
-                            st.caption(f"   ↳ {payload['result']}")
+                        if payload["name"] != "check_progress":
+                            with status:
+                                st.caption(f"   ↳ {_brief(payload['result'])}")
                         events_log.append({"type": "tool_result", "name": payload["name"], "result": payload["result"]})
                     elif event == "final":
                         final_text = payload
                     elif event == "error":
                         final_text = f"⚠️ {payload}"
-                status.update(label="✅ Agent 执行完成", state="complete", expanded=False)
+                status.update(label="✅ 完成", state="complete", expanded=False)
             except Exception as e:
                 status.update(label=f"❌ 出错:{e}", state="error")
                 final_text = f"执行出错:{e}"
@@ -735,7 +749,7 @@ with tabs[6]:
                 st.session_state[key] = ctx[key]
                 synced.append(key)
         if synced:
-            st.toast(f"✅ 已同步到其他 tab:{', '.join(synced)}", icon="🔗")
+            st.toast("结果已同步,可在上方各页面查看详情", icon="✅")
 
         # 追加对话记录
         st.session_state.agent_history.append({"role": "user", "content": user_input})
